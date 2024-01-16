@@ -1,0 +1,1746 @@
+---
+title: "Harmonized MELODEM DWS analyses"
+author: "Eleanor Hayes-Larson, adapted from Cecile Proust-Lima and Terry Therneau"
+output:
+  html_document:
+    df_print: paged
+---
+
+# INTRODUCTION
+
+This script will serve as the analysis code for harmonized analyses for the 
+MELODEM timescales data workshop paper. 
+
+Briefly, you will set some file paths to read in data and save output (lines 84-85), then 
+rename your variables to harmonized names (lines 116-205) so that you don't need to make any 
+further edits after the renaming section. The code then runs the descriptive analyses, 
+analytic models, and saves the output to be emailed to Eleanor along with this markdown file.
+
+Eleanor's email: ehayeslarson@ucla.edu
+
+If you indicate your dataset has large enough sample sizes to support analyses 
+stratified by race (line 79), the script will automatically run these and save an additional 
+output file to be emailed to Eleanor. Otherwise, the analysis will automatically 
+end after the analysis in the sample overall.
+
+Before reading in your data, please ensure:
+
+1. your data are in tall/long format. Baseline is the first cognitive assessment included in the analysis. 
+    Note: baseline could be different from study enrollment!
+    Note: baseline could also be different from first assessment for practice effect purposes 
+        (e.g. if there's prior test exposure that isn't being included in the analytic dataset)
+2. Please impose any sample restrictions prior to loading data (e.g. in HRS we will restrict to 
+        Black and white participants age 50+ in 1995 and later)
+3. The dataset contains the following variables, coded as specified below. 
+    Please make sure the units match what is specified! 
+    Note: variable names are not important yet; you will set names later in the script (lines 116 – 205).
+  
+  - ID variable for repeated observations
+  - indicator for first cognitive assessment. 
+        Coded 1=first visit, 0=not first visit)
+  - age (YEARS, not centered)
+  - apoe e-4 status (coded 1=at least one e4 allele (24, 34, 44), 0=no e4 alleles (22, 23, 33))
+  - diabetes status at baseline visit (coded 1=has diabetes at baseline, 0=no diabetes at baseline)
+  - memory score for each visit (continuous scale -- units don't matter as will be z-scored in script)
+  - educational attainment (YEARS if continuous or categorical--need to specify categories in lines 174-179)
+  - sex/gender (1=female, 0=male)
+  - race (categorical -- if applicable, need to specify categories in lines 192-194)
+  
+Please make sure your units match the commented units!
+
+Places you need to make edits in the code are marked with "#USER CHANGE LINE ##"
+so you can do a Ctrl+F to make sure you've made all the necessary changes. 
+No edits needed after line 205! 
+
+#DATA READ-IN AND PREP SECTION
+
+```{r, getdata}
+rm(list=ls())
+start<-Sys.time()
+# Loading required packages. 
+#NOTE: If you don't have these packages installed, you will need to install 
+# them using install.packages("packagename") before running the next line. 
+# Ask Eleanor for help if needed!
+library(splines) # standard R
+packages <- c("lme4", "lcmm", "dplyr", "gtsummary", "haven", "ggplot2") # optional in R
+for (i in packages) suppressMessages(library(package = i, character.only=TRUE))
+
+# Printing  versions of packages 
+temp <- sessionInfo()   
+versions<-c(temp[["R.version"]]$version.string, sapply(temp$otherPkgs[packages], function(x) x$Version))
+versions 
+
+#USER CHANGE LINE 73
+#Set a shorthand name of your cohort here (this is to help Eleanor keep 
+# output organized!):
+cohort<-"HRS"
+
+#USER CHANGE LINE 79
+#Set to "TRUE" if your dataset can support analyses stratified by race and
+#  ethnicity and "FALSE" otherwise. If stratified analyses are desired, 
+# please restrict cohorts to racial and ethnic groups that can support analyses. 
+strat<- TRUE
+
+
+#USER CHANGE LINE 84-85
+#set location of data to read in
+path_to_data <- "/Users/eleanorhayes-larson/Library/CloudStorage/Box-Box/Timescale project/HRS/data/"
+path_to_output <- "/Users/eleanorhayes-larson/Library/CloudStorage/Box-Box/Timescale project/HRS/Output/"
+  
+#USER CHANGE LINE 90
+# Change the line below to the name of your file, including suffix (.csv, etc)
+#  Upper/lower case matters!
+filename <- "hrs_memscore_timescale.sas7bdat" 
+
+# for the ifelse below, I don't care what case the suffix is in
+suffix <- casefold(sub("^.*\\.", "", filename))
+data <- 
+    if (suffix == "sas7bdat") {
+        read_sas(paste0(path_to_data, filename))
+    } else if (suffix == "dta") {
+        read_stata(paste0(path_to_data,filename))
+    } else if (suffix == "csv") {
+        read.csv(paste0(path_to_data,filename))
+    } else if (suffix == "rds") {
+        data <- readRDS(paste0(path_to_data,filename))
+    } else if (suffix== "rda"|| suffix=="rdata") {
+        load(paste0(path_to_data,filename))
+      } else stop("file type not recognized")
+
+# If your data type isn't recognized, let us know.  Note that the only SAS
+#  data set types we can read in are sas7bdat and SAS transport files.
+```
+
+Define a set of common variable names.
+```{r, rename}
+#USER CHANGE LINE 116
+#Individual ID variable. 
+#Change "HHIDPN" to your study's person-level id variable name
+data$id <- as.numeric(data$HHIDPN) 
+
+#USER CHANGE LINE 122-124
+# indicator for the first cognitive assessment for each person
+#Change "BASELINE_VISIT" to your study's first cognitive assessment indicator
+# variable name
+data$first_test <- factor(data$BASELINE_VISIT,
+                          levels=c(0,1), 
+                          labels=c("Not first assessment", "First assessment"))
+
+
+#USER CHANGE LINE 131
+# Current age (i.e. age at visit) in YEARS
+#Change "LONG_AGE" to your study's current age (i.e. age at each assessment) 
+# variable
+data$age_y  <- as.numeric(data$LONG_AGE)  
+
+
+#USER CHANGE LINE 137-140
+#Any e4 allele
+#Change "APOE4" to your study's indicator for any APOE e-4 allele variable
+data$APOE4<-ifelse(data$APOE %in% c(24,34,44),1, ifelse(data$APOE %in% c(22,23,33),0,NA))
+
+data$apoe4 <- factor(data$APOE4, 
+                     levels=c(0,1), 
+                     labels = c("No APOE e-4 allele",
+                                "At least one APOE e-4 allele"))
+
+  
+#USER CHANGE LINE 147-150
+#diabetes status at first cognitive assessment
+#Change "DIABETES" to your study's indicator variable for diabetes at 
+# first cognitive assessment
+data$diabetes_bl<- factor(data$DIABETES, 
+                     levels=c(0,1), 
+                     labels = c("No diabetes at baseline",
+                                "Diabetes at baseline"))
+
+
+#USER CHANGE LINE 157
+# Memory score. Units do not matter--will be automatically z-scored below. 
+# Change "IMP_MEM_SCORE" to your study's primary outcome variable:
+#  memory assessment score 
+data$mem <- as.numeric(data$IMP_MEM_SCORE)  
+
+
+#USER CHANGE LINE 163, 167, 174-179
+#Education variable. 
+#Change "educationvar" to your study's education variable name
+data$edu1 <- data$RAEDYRS
+# Indicate the preferred way to control for education for your cohort.
+# (e.g. # years vs. categories of level attained) 
+#  Specify TRUE if it is continuous (units should be years) and FALSE if categorical.
+education_continuous <- TRUE #TRUE if cont. years, FALSE if categorical
+
+if (education_continuous){
+    data$edu <- as.numeric(data$edu1)
+} else {
+    # If your education variable is categorical, 
+    # designate levels (first is reference) and labels here:
+    data$edu <- factor(data$edu1, levels=c(2,0,1,3,4), #reference categ first
+                       labels=c("High school degree",  
+                                "None",
+                                "Less than high school",
+                                "Some college",
+                                "College degree or more"))
+} 
+
+
+#USER CHANGE LINE 186
+#Sex
+#Change "female" to your study's indicator variable for female sex/gender
+data$female <- factor(data$female,
+                      levels=c(0,1), 
+                      labels = c("Male",
+                                "Female"))
+                      
+
+#USER CHANGE LINE 192-194, if you can stratify by race and ethnicity
+# Race
+# Change "RACE_ETH" to your study's variable for race and ethnicity
+data$race <- factor(data$RARACEM, 
+                    levels = c(2,1), 
+                    labels = c("Black", "White"))
+
+#ADD STUDY-SPECIFIC covariates (site/wave). 
+#If you need to do this, please get in touch with Eleanor!
+# data$studygrp<-factor(data$SITE, 
+#                       levels=c(1,2,3,4),
+#                       labels=c("Site 1",
+#                                "Site 2",
+#                                "Site 3",
+#                                "Site 4"))
+```
+
+
+#ADDITIONAL AUTOMATED DATA MANIPULATION
+
+You should not need to make edits in the code after this point 
+*unless you are adding a study-specific variable* 
+The next section centers variables, drops missing data, and z-scores memory to
+the analytic sample at baseline.
+
+```{r, finalprep}
+#Keep complete cases
+data <- data %>% 
+  select(id, first_test, age_y, apoe4, diabetes_bl, mem, edu, female, race) %>% 
+                  filter(complete.cases(.))
+
+# sort by time within id
+data <- data[order(data$id, data$age_y), ]
+
+
+# create age at baseline in YEARS using first row for each person
+firstrow <- match(data$id, data$id)
+data$age0 <- data$age_y[firstrow] 
+  
+
+#Create time in YEARS since baseline (first observation should be 0)
+data$years <- data$age_y - data$age0
+
+# Center current age in years at 65
+data$age_y_c65 <- as.numeric(data$age_y - 65)
+
+# Center age at first cognitive assessment in years at 65
+data$age0_c65  <- data$age0 - 65
+
+# Center education if in continuous years for use in models
+if (education_continuous){
+    data$edu_c <- as.numeric(data$edu-12)
+} else { data$edu_c  <- data$edu}
+
+#Keep complete cases on analytic variables  
+data2 <- data %>% select(id, first_test, age_y, age_y_c65, age0, age0_c65, 
+                         years, apoe4, diabetes_bl, mem, edu, edu_c, female, race) %>% 
+                  filter(complete.cases(.))
+
+# Z-score memory to complete case sample at baseline:
+base_mem_mean<- data2 %>% dplyr::arrange(id, years) %>% group_by(id) %>% 
+  slice_head(n=1) %>% ungroup() %>%
+select(mem) %>% 
+    summarise(base_mem_mean =  mean(mem)) %>% as.numeric
+
+base_mem_sd<- data2 %>% dplyr::arrange(id, years) %>% group_by(id) %>% 
+  slice_head(n=1) %>% ungroup() %>%
+  select(mem) %>% 
+    summarise(base_mem_sd =  sd(mem)) %>% as.numeric
+
+data2$mem <- (data2$mem-base_mem_mean)/base_mem_sd
+
+
+#Labeling variables
+data2 <- data2 %>%
+    labelled::set_variable_labels(first_test = 'First cognitive assessment',
+                                  age_y = 'Age (years)',
+                                  age0 = 'Age at baseline (years)',
+                                  years = 'Time since baseline (years)',
+                                  apoe4 = 'Any APOE e-4 allele',
+                                  diabetes_bl = 'Diabetes status at baseline',
+                                  mem = 'Memory score',
+                                  female = 'Female',
+                                  race = 'Race/ethnicity',
+                                  age_y_c65 = 'Age (years) centered at 65',
+                                  age0_c65 = 'Age at baseline (years) centered at 65') 
+if (education_continuous==T){
+    data2 <- data2 %>%
+    labelled::set_variable_labels(edu = 'Years of education')
+} else {
+    data2 <- data2 %>%
+    labelled::set_variable_labels(edu = 'Educational attainment')
+}
+
+data2 <- data2 %>% purrr::modify_if(labelled::is.labelled, labelled::to_factor)
+data2 <- data2 %>% group_by(id) %>% dplyr::arrange(id, years) %>%ungroup
+
+rownames(data2)<-NULL
+```
+
+#ANALYSIS SECTION
+
+This section runs descriptive analyses, mixed effects models for APOE and
+diabetes, and saves results. It automatically runs both overall and, 
+if specified above, race/ethnicity-stratified results. 
+```{r, desc_analysis}
+
+#Script chooses to run just overall or overall and race-stratified analyses
+if (strat) { 
+    analysisvector <- c("Overall", levels(data2$race))
+} else { analysisvector <- c("Overall") }
+          
+         
+#Conduct analyses, looping over "overall" and if stratified, race/ethnicity 
+for (i in analysisvector) {
+    if (i!="Overall") {
+        dat <- data2 %>% filter(race==i)} else {dat <- data2}
+
+    #################################################################         
+    #Section 1: 
+    #Baseline characteristics and summary of longitudinal measures
+    #################################################################
+  
+    #Create baseline dataset (first obs per person) for descriptive stats
+    baseline_dat <- dat %>% group_by(id) %>% slice_head(n=1)
+  
+  
+    #Summarize # of observations and max f/u per person
+    t1_data <- dat %>% group_by(id) %>% summarise(num_obs=n(), 
+                                                  fu_time=max(years)) %>% 
+            full_join(baseline_dat, ., by="id")
+  
+  #Merge onto baseline data
+    t1_data <- t1_data %>% 
+      labelled::set_variable_labels(num_obs = 'No. of cognitive assessments during follow-up',
+                                    fu_time = 'Total follow-up time (years)')
+                      
+    
+    #Create Table 1
+      tab1 <- t1_data %>% 
+        tbl_summary(missing = "ifany", 
+                    by=NULL,
+                    type = list(all_continuous() ~ "continuous2",
+                            num_obs ~ "continuous2"),
+                    statistic = list(all_continuous() ~ c("{mean} ({sd})",
+                        "{min}, {p10}, {p25}, {median}, {p75}, {p90}, {max}"),
+                                      all_categorical() ~ "{n} ({p}%)"),
+                    digits = list(all_categorical() ~ c(0, 1),
+                                  all_continuous() ~ c(1,1)),
+                    include = c(age0, female, race, edu, apoe4, diabetes_bl,
+                                   mem, num_obs, fu_time))%>%
+        modify_header(label = "**Variable**", 
+                      all_stat_cols() ~ paste0(cohort,"<br>",i,"<br> N={N}")) %>%
+        add_stat_label(location = "row") %>%
+        modify_column_indent(columns=label, undo = T) %>%
+        bold_labels() 
+      
+    tab1
+    tab1$inputs<-NULL #This deletes inputs element, which includes input data
+      
+    tab1_df<-tab1 %>% as_tibble()
+
+    #Create plots for current age * baseline age, current age * time on study,
+    #  and dist of all ages (long data)
+    plot_agebyage0 <- ggplot(data=dat, aes(x=age0, y=age_y))+geom_point()+
+        theme_bw()+ggtitle(paste0("Distribution of current age by baseline age, ",cohort,", ",i))
+    print(plot_agebyage0)
+    plot_agebyyears <- ggplot(data=dat, aes(x=years, y=age_y))+geom_point()+
+      theme_bw()+ggtitle(paste0("Distribution of current age by time since baseline, ",cohort,", ",i))
+    print(plot_agebyyears)
+    plot_agedist <- ggplot(data=dat, aes(x=age_y))+geom_histogram()+theme_bw()+
+      ggtitle(paste0("Histogram of current age, ",cohort,", ",i))
+    print(plot_agedist)
+    # plotlist<-list(plot_agebyage0,  plot_agebyyears, plot_agedist)
+    # pdf(paste0(path_to_output,cohort,"_plots_",i,".pdf"))
+    # plot_agebyage0
+    # plot_agebyyears
+    # plot_agedist
+    # dev.off()
+    
+    #Tabulate n by time and age for attrition
+    #Attrition for time on study
+    temp1 <- data2 %>% mutate(ind_0_5 = ifelse(years>=0 & years <5, 1, 0),
+                         ind_5_10 = ifelse(years>=5 & years <10, 1, 0),
+                         ind_10_15 = ifelse(years>=10 & years <15, 1, 0),
+                         ind_15_20 = ifelse(years>=15 & years <20, 1, 0),
+                         ind_20_25 = ifelse(years>=20 & years <25, 1, 0),
+                         ind_25_30 = ifelse(years>=25 & years <30, 1, 0),
+                         ind_30_35 = ifelse(years>=30 & years <35, 1, 0),
+                         ind_35_40 = ifelse(years>=35 & years <40, 1, 0)) %>% 
+                group_by(id) %>% dplyr::summarise(ind_0_5_sum = sum(ind_0_5),
+                                           ind_5_10_sum = sum(ind_5_10),
+                                           ind_10_15_sum = sum(ind_10_15),
+                                           ind_15_20_sum = sum(ind_15_20),
+                                           ind_20_25_sum = sum(ind_20_25),
+                                           ind_25_30_sum = sum(ind_25_30),
+                                           ind_30_35_sum = sum(ind_30_35),
+                                           ind_35_40_sum = sum(ind_35_40)) 
+
+    time_attr <- rbind.data.frame( baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_0_5_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Time="0-5 years"),  
+                                baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_5_10_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Time="5-10 years"),   
+                                baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_10_15_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Time="10-15 years"),   
+                                baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_15_20_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Time="15-20 years"),  
+                                baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_20_25_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Time="20-25 years"),  
+                                baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_25_30_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Time="25-30 years"),  
+                                baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_30_35_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Time="30-35 years"),  
+                                baseline_dat %>% filter(id %in% (temp1 %>% filter(ind_35_40_sum > 0) %>% .$id)) %>% 
+                                  ungroup() %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                                 n_DM = sum(diabetes_bl=="Diabetes at baseline"))  %>% mutate(Time="35-40 years")   
+    )
+    
+    #Attrition for age groups
+  temp2 <- data2 %>% mutate(ind_50_55 = ifelse(age_y>=50 & age_y <55, 1, 0),
+                          ind_55_60 = ifelse(age_y>=55 & age_y <60, 1, 0),
+                          ind_60_65 = ifelse(age_y>=60 & age_y <65, 1, 0),
+                          ind_65_70 = ifelse(age_y>=65 & age_y <70, 1, 0),
+                          ind_70_75 = ifelse(age_y>=70 & age_y <75, 1, 0),
+                          ind_75_80 = ifelse(age_y>=75 & age_y <80, 1, 0),
+                          ind_80_85 = ifelse(age_y>=80 & age_y <85, 1, 0),
+                          ind_85_90 = ifelse(age_y>=85 & age_y <90, 1, 0),
+                          ind_90_95 = ifelse(age_y>=90 & age_y <95, 1, 0),
+                          ind_95_100 = ifelse(age_y>=95 & age_y <100, 1, 0)) %>% 
+          group_by(id) %>% dplyr::summarise(ind_50_55_sum = sum(ind_50_55),
+                                            ind_55_60_sum = sum(ind_55_60),
+                                            ind_60_65_sum = sum(ind_60_65),
+                                            ind_65_70_sum = sum(ind_65_70),
+                                            ind_70_75_sum = sum(ind_70_75),
+                                            ind_75_80_sum = sum(ind_75_80),
+                                            ind_80_85_sum = sum(ind_80_85),
+                                            ind_85_90_sum = sum(ind_85_90),
+                                            ind_90_95_sum = sum(ind_90_95),
+                                            ind_95_100_sum = sum(ind_95_100)) 
+
+age_attr <- rbind.data.frame( baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_50_55_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="50-55 years"),  
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_55_60_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="55-60 years"),   
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_60_65_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="60-65 years"),   
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_65_70_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="65-70 years"),  
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_70_75_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="70-75 years"),  
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_75_80_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="75-80 years"),  
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_80_85_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="80-85 years"),  
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_85_90_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="85-90 years"),  
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_90_95_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="90-95 years"),  
+                           baseline_dat %>% filter(id %in% (temp2 %>% filter(ind_95_100_sum > 0) %>% .$id)) %>% 
+                             ungroup %>% dplyr::summarise(n=n(),n_APOE = sum(apoe4=="At least one APOE e-4 allele"),
+                                                          n_DM = sum(diabetes_bl=="Diabetes at baseline")) %>% mutate(Age="95-100 years")   
+)
+
+    #Attrition by age at baseline
+    temp3 <- baseline_dat %>% mutate(age0_group = cut(age0,breaks = seq(40,100,by=5), right=F))
+    
+    age_attr2 <- rbind.data.frame( temp3 %>% filter(id %in% (temp2 %>% filter(ind_50_55_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="50-55 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_55_60_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="55-60 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_60_65_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="60-65 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_65_70_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="65-70 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_70_75_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="70-75 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_75_80_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="75-80 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_80_85_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="80-85 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_85_90_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="85-90 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_90_95_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="90-95 years"),
+                               temp3 %>% filter(id %in% (temp2 %>% filter(ind_95_100_sum > 0) %>% .$id)) %>% 
+                                 group_by(age0_group) %>% dplyr::summarise(n=n()) %>% mutate(Age="95-100 years")
+        )
+
+    
+    #Save results for each group
+    assign(paste0("desc_",i),list(versions=versions, tab1 = tab1, tab1_df=tab1_df,
+                                  knots_age=quantile(dat$age_y_c65, c(.05, .33, 0.5, 0.67, .95)), 
+                                  knots_time=quantile(dat$years, c(.05, .33, 0.5, 0.67, .95)), 
+                                  knots_age0=quantile(dat$age0_c65, c(.05, .33, 0.5, 0.67, .95)),
+                                  time_attr=time_attr,
+                                  age_attr=age_attr,
+                                  age_attr2=age_attr2))
+    
+    
+}
+```
+
+Now fit the lme models for apoe. We first fit using lmer which is fast but has a tendency to think 
+it hasn't converged. Then we use the output from lmer as starting values for hlme, which is slower 
+but has a better chance of converging.
+```{r, lme_apoe} 
+for (i in analysisvector) {
+    if (i!="Overall") {
+        dat <- data2 %>% filter(race==i)} else {dat <- data2}
+
+    #################################################################         
+    #Section 2 
+    #  Define functions to create splines based on knot location quantiles
+    #################################################################
+    ns2 <- function(x) {
+        temp <- quantile(x, c(.05, .33, 0.67, .95))
+        ns(x, Boundary.knots = temp[c(1,4)], knots= temp[2:3])
+    }
+
+    # For random effects one knot at the median
+    ns1 <- function(x) {
+        temp <- quantile(x, c(.05, .5, .95))
+        ns(x, Boundary.knots = temp[c(1,3)], knots= temp[2])
+    }
+    #################################################################         
+    #Section 3 
+    #Run models for APOE-e4 
+    #################################################################
+
+    
+    #lmer models to get starting values for hlme models:
+
+    apoe_m1a_lmer <- lmer(mem ~ first_test + (apoe4 + female) * years +
+                     (1 + years | id), data = dat)
+    
+    apoe_m1b_lmer <- lmer(mem ~ first_test + (apoe4 + female) *ns1(years) +
+                     (1 + years | id), data = dat)
+    
+    apoe_m1c_lmer <- lmer(mem ~ first_test + (apoe4 + female) *ns2(years) +
+                     (1 + ns1(years) | id), data = dat)
+    
+    
+    apoe_m2a_lmer <- lmer(mem ~  first_test + (apoe4 + female) * years +
+                           age0_c65 + (1 + years | id), data = dat)
+    
+    apoe_m2b_lmer <- lmer(mem ~  first_test + (apoe4 + female) *ns1(years) +
+                           age0_c65 + (1 + years | id), data = dat)
+    
+    apoe_m2c_lmer <- lmer(mem ~  first_test + (apoe4 + female) *ns2(years) +
+                           age0_c65 + (1 + ns1(years) | id), data = dat)
+    
+  
+    apoe_m3a_lmer <- lmer(mem ~ first_test + (apoe4 + female) * years +
+                           ns1(age0_c65) +  (1 + years | id), data = dat)
+
+    apoe_m3b_lmer <- lmer(mem ~ first_test + (apoe4 + female) *ns1(years) +
+                           ns1(age0_c65) +  (1 + years | id), data = dat)
+
+    apoe_m3c_lmer <- lmer(mem ~ first_test + (apoe4 + female) *ns2(years) +
+                           ns1(age0_c65) +  (1 + ns1(years) | id), data = dat)
+
+    
+    apoe_m4a_lmer <- lmer(mem ~ first_test + 
+                             (apoe4 + female + age0_c65) * years +
+                             (1 + years | id), data = dat)
+    
+    apoe_m4b_lmer <- lmer(mem ~ first_test + 
+                             (apoe4 + female + age0_c65) * ns1(years) +
+                             (1 + years | id), data = dat)
+    
+    apoe_m4c_lmer <- lmer(mem ~ first_test + 
+                             (apoe4 + female + age0_c65) * ns2(years) +
+                             (1 + ns1(years) | id), data = dat)
+    
+    
+    apoe_m5a_lmer <- lmer(mem ~ first_test + 
+                             (apoe4 + female + ns1(age0_c65)) * years +
+                             (1 + years | id), data = dat)
+
+    apoe_m5b_lmer <- lmer(mem ~ first_test + 
+                             (apoe4 + female + ns1(age0_c65)) * ns1(years) +
+                             (1 + years | id), data = dat)
+    
+    apoe_m5c_lmer <- lmer(mem ~ first_test + 
+                             (apoe4 + female + ns1(age0_c65)) * ns2(years) +
+                             (1 + ns1(years) | id), data = dat)
+    
+    # Use age instead of years on study
+    apoe_m6a_lmer <- lmer(mem ~ first_test + 
+                              (apoe4 + female) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    apoe_m6b_lmer <- lmer(mem ~ first_test + 
+                              (apoe4 + female) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    apoe_m6c_lmer <- lmer(mem ~ first_test + 
+                              (apoe4 + female) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)   
+    
+    
+    apoe_m7a_lmer <- lmer(mem ~ first_test + age0_c65 +  
+                              (apoe4 + female) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    apoe_m7b_lmer <- lmer(mem ~ first_test + age0_c65 +  
+                              (apoe4 + female) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    apoe_m7c_lmer <- lmer(mem ~ first_test + age0_c65 +  
+                              (apoe4 + female) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)   
+    
+    
+    apoe_m8a_lmer <- lmer(mem ~ first_test + ns1(age0_c65) +  
+                              (apoe4 + female) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    apoe_m8b_lmer <- lmer(mem ~ first_test + ns1(age0_c65) +  
+                              (apoe4 + female) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    apoe_m8c_lmer <- lmer(mem ~ first_test + ns1(age0_c65) +  
+                              (apoe4 + female) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)   
+    
+    
+    apoe_m9a_lmer <- lmer(mem ~ first_test + 
+                              (apoe4 + female + age0_c65) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)  
+    
+    apoe_m9b_lmer <- lmer(mem ~ first_test + 
+                              (apoe4 + female + age0_c65) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)
+    
+    apoe_m9c_lmer <- lmer(mem ~ first_test + 
+                              (apoe4 + female + age0_c65) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)
+    
+    #create vectors with starting values for hlme to use to speed up runtime
+    for (j in 1:9){
+         assign(paste0("start_apoe",j,"a"), c(fixef(get(paste0("apoe_m",j,"a_lmer"))), 
+           as.data.frame(VarCorr(get(paste0("apoe_m",j,"a_lmer"))))[c(1,3,2),"vcov"], 
+           as.data.frame(VarCorr(get(paste0("apoe_m",j,"a_lmer"))))[4,"sdcor"]))
+      
+        assign(paste0("start_apoe",j,"b"), c(fixef(get(paste0("apoe_m",j,"b_lmer"))), 
+               as.data.frame(VarCorr(get(paste0("apoe_m",j,"b_lmer"))))[c(1,3,2),"vcov"], 
+               as.data.frame(VarCorr(get(paste0("apoe_m",j,"b_lmer"))))[4,"sdcor"]))
+        
+        assign(paste0("start_apoe",j,"c"), c(fixef(get(paste0("apoe_m",j,"c_lmer"))), 
+               as.data.frame(VarCorr(get(paste0("apoe_m",j,"c_lmer"))))[c(1,4,2,5,6,3),"vcov"], 
+               as.data.frame(VarCorr(get(paste0("apoe_m",j,"c_lmer"))))[7,"sdcor"]))
+    }
+    
+    
+    #Run final APOE models with hlme function
+    #Time only
+    apoe_m1a <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe1a), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                    which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+
+    apoe_m1b <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe1b), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                    which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+    apoe_m1c <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe1c), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                    which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })  
+      
+      # Time adjusted on Age0 (linear) without interaction
+      apoe_m2a <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * years +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe2a), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * years +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m2b <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns1(years) +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe2b), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~  first_test + (apoe4 + female) * ns1(years) +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+           
+      apoe_m2c <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns2(years) +
+                       age0_c65,
+                    random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                    maxiter=100, B=start_apoe2c), 
+            
+            error=function(cond){
+              message(paste("There was a problem with the lmer starting values
+                            in this model. Here's the error message:"))
+              message(cond)
+              message(paste("\nNow attempting to run without starting values, 
+                            which will take some time."))
+              return(hlme(mem ~  first_test + (apoe4 + female) * ns2(years) +
+                       age0_c65,
+                    random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                    maxiter=100))
+              })
+  
+      
+      
+      
+      # Time adjusted on Age0 (spline) without interaction
+      apoe_m3a <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * years +
+                           ns1(age0_c65),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe3a), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values,
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * years +
+                           ns1(age0_c65),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m3b <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns1(years) +
+                           ns1(age0_c65),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe3b), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values,
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * ns1(years) +
+                           ns1(age0_c65),
+                        random = ~years, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      apoe_m3c <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns2(years) +
+                           ns1(age0_c65),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe3c), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values,
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * ns2(years) +
+                           ns1(age0_c65),
+                        random = ~ns1(years), subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      
+      # Time adjusted on Age0 (linear) with interaction
+      apoe_m4a <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe4a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m4b <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe4b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+        
+      apoe_m4c <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe4c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+       
+      # Time adjusted on Age0 (spline) with interaction
+      apoe_m5a <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + ns1(age0_c65)) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe5a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + ns1(age0_c65)) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m5b <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + ns1(age0_c65)) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe5b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + ns1(age0_c65)) * ns1(years),
+                        random = ~years, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      apoe_m5c <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + ns1(age0_c65)) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe5c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + ns1(age0_c65)) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+     
+      
+       # Only age
+      apoe_m6a <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe6a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m6b <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe6b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+         
+      apoe_m6c <- tryCatch(hlme(mem ~ first_test + (apoe4 + female) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe6c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+
+      
+      # Age adjusted on Age0 (linear) without interaction
+      apoe_m7a <- tryCatch(hlme(mem ~ first_test + age0_c65 + (apoe4 + female) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe7a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + age0_c65 + (apoe4 + female) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m7b <- tryCatch(hlme(mem ~ first_test + age0_c65 + (apoe4 + female) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe7b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + age0_c65 + (apoe4 + female) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m7c <- tryCatch(hlme(mem ~ first_test + age0_c65 + (apoe4 + female) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe7c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + age0_c65 + (apoe4 + female) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+
+      
+      # Age adjusted on Age0 (spline) without interaction
+      apoe_m8a <- tryCatch(hlme(mem ~ first_test + ns1(age0_c65) + (apoe4 + female) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe8a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + ns1(age0_c65) + (apoe4 + female) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+        apoe_m8b <- tryCatch(hlme(mem ~ first_test + ns1(age0_c65) + (apoe4 + female) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe8b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + ns1(age0_c65) + (apoe4 + female) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      apoe_m8c <- tryCatch(hlme(mem ~ first_test + ns1(age0_c65) + (apoe4 + female) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe8c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + ns1(age0_c65) + (apoe4 + female) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      # Age adjusted on Age0 (linear) with interaction
+      apoe_m9a <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe9a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * age_y_c65, 
+                        random = ~age_y_c65, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      apoe_m9b <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe9b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      apoe_m9c <- tryCatch(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_apoe9c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (apoe4 + female + age0_c65) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+     
+      apoemodlist<-list( apoe_m1a=apoe_m1a, apoe_m1b=apoe_m1b, apoe_m1c=apoe_m1c, 
+                         apoe_m2a=apoe_m2a, apoe_m2b=apoe_m2b, apoe_m2c=apoe_m2c, 
+                         apoe_m3a=apoe_m3a, apoe_m3b=apoe_m3b, apoe_m3c=apoe_m3c,
+                         apoe_m4a=apoe_m4a, apoe_m4b=apoe_m4b, apoe_m4c=apoe_m4c, 
+                         apoe_m5a=apoe_m5a, apoe_m5b=apoe_m5b, apoe_m5c=apoe_m5c, 
+                         apoe_m6a=apoe_m6a, apoe_m6b=apoe_m6b, apoe_m6c=apoe_m6c,
+                         apoe_m7a=apoe_m7a, apoe_m7b=apoe_m7b, apoe_m7c=apoe_m7c, 
+                         apoe_m8a=apoe_m8a, apoe_m8b=apoe_m8b, apoe_m8c=apoe_m8c, 
+                         apoe_m9a=apoe_m9a, apoe_m9b=apoe_m9b, apoe_m9c=apoe_m9c)
+
+      #Define function to remove all individual-level data from model output
+        # e.g. predicted REs, residuals, etc. 
+      rm_output<-function(z){
+        z$pred<-NULL
+        z$pprob<-NULL
+        z$predRE<-NULL
+            return(z)}
+      
+      assign(paste0("apoemods_",i),lapply(apoemodlist, rm_output))
+      
+      
+      
+  }         
+``` 
+
+Now fit the lme models for diabetes. Same as apoe, we first fit using lmer which
+is fast but has a tendency to think it hasn't converged. Then we use the output 
+from lmer as starting values for hlme, which is slower but has a better chance 
+of converging.
+```{r, lme_diab}
+
+for (i in analysisvector) {
+    if (i!="Overall") {
+        dat <- data2 %>% filter(race==i)} else {dat <- data2}
+    #################################################################         
+    #Section 3 
+    #Run models for diabetes 
+    #################################################################
+
+    
+    #lmer models to get starting values for hlme models:
+
+    diab_m1a_lmer <- lmer(mem ~ first_test + (diabetes_bl + female + edu_c) * years +
+                     (1 + years | id), data = dat)
+    
+    diab_m1b_lmer <- lmer(mem ~ first_test + (diabetes_bl + female + edu_c) *ns1(years) +
+                     (1 + years | id), data = dat)
+    
+    diab_m1c_lmer <- lmer(mem ~ first_test + (diabetes_bl + female + edu_c) *ns2(years) +
+                     (1 + ns1(years) | id), data = dat)
+    
+    
+    diab_m2a_lmer <- lmer(mem ~  first_test + (diabetes_bl + female + edu_c) * years +
+                           age0_c65 + (1 + years | id), data = dat)
+    
+    diab_m2b_lmer <- lmer(mem ~  first_test + (diabetes_bl + female + edu_c) *ns1(years) +
+                           age0_c65 + (1 + years | id), data = dat)
+    
+    diab_m2c_lmer <- lmer(mem ~  first_test + (diabetes_bl + female + edu_c) *ns2(years) +
+                           age0_c65 + (1 + ns1(years) | id), data = dat)
+    
+  
+    diab_m3a_lmer <- lmer(mem ~ first_test + (diabetes_bl + female + edu_c) * years +
+                           ns1(age0_c65) +  (1 + years | id), data = dat)
+
+    diab_m3b_lmer <- lmer(mem ~ first_test + (diabetes_bl + female + edu_c) *ns1(years) +
+                           ns1(age0_c65) +  (1 + years | id), data = dat)
+
+    diab_m3c_lmer <- lmer(mem ~ first_test + (diabetes_bl + female + edu_c) *ns2(years) +
+                           ns1(age0_c65) +  (1 + ns1(years) | id), data = dat)
+
+    
+    diab_m4a_lmer <- lmer(mem ~ first_test + 
+                             (diabetes_bl + female + age0_c65 + edu_c) * years +
+                             (1 + years | id), data = dat)
+    
+    diab_m4b_lmer <- lmer(mem ~ first_test + 
+                             (diabetes_bl + female + age0_c65 + edu_c) * ns1(years) +
+                             (1 + years | id), data = dat)
+    
+    diab_m4c_lmer <- lmer(mem ~ first_test + 
+                             (diabetes_bl + female + age0_c65 + edu_c) * ns2(years) +
+                             (1 + ns1(years) | id), data = dat)
+    
+    
+    diab_m5a_lmer <- lmer(mem ~ first_test + 
+                             (diabetes_bl + female + ns1(age0_c65) + edu_c) * years +
+                             (1 + years | id), data = dat)
+
+    diab_m5b_lmer <- lmer(mem ~ first_test + 
+                             (diabetes_bl + female + ns1(age0_c65) + edu_c) * ns1(years) +
+                             (1 + years | id), data = dat)
+    
+    diab_m5c_lmer <- lmer(mem ~ first_test + 
+                             (diabetes_bl + female + ns1(age0_c65) + edu_c) * ns2(years) +
+                             (1 + ns1(years) | id), data = dat)
+    
+    # Use age instead of years on study
+    diab_m6a_lmer <- lmer(mem ~ first_test + 
+                              (diabetes_bl + female + edu_c) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    diab_m6b_lmer <- lmer(mem ~ first_test + 
+                              (diabetes_bl + female + edu_c) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    diab_m6c_lmer <- lmer(mem ~ first_test + 
+                              (diabetes_bl + female + edu_c) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)   
+    
+    
+    diab_m7a_lmer <- lmer(mem ~ first_test + age0_c65 +  
+                              (diabetes_bl + female + edu_c) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    diab_m7b_lmer <- lmer(mem ~ first_test + age0_c65 +  
+                              (diabetes_bl + female + edu_c) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    diab_m7c_lmer <- lmer(mem ~ first_test + age0_c65 +  
+                              (diabetes_bl + female + edu_c) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)   
+    
+    
+    diab_m8a_lmer <- lmer(mem ~ first_test + ns1(age0_c65) +  
+                              (diabetes_bl + female + edu_c) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    diab_m8b_lmer <- lmer(mem ~ first_test + ns1(age0_c65) +  
+                              (diabetes_bl + female + edu_c) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)   
+    
+    diab_m8c_lmer <- lmer(mem ~ first_test + ns1(age0_c65) +  
+                              (diabetes_bl + female + edu_c) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)   
+    
+    
+    diab_m9a_lmer <- lmer(mem ~ first_test + 
+                              (diabetes_bl + female + age0_c65 + edu_c) * age_y_c65 +
+                             (1 + age_y_c65 | id), data = dat)  
+    
+    diab_m9b_lmer <- lmer(mem ~ first_test + 
+                              (diabetes_bl + female + age0_c65 + edu_c) * ns1(age_y_c65) +
+                             (1 + age_y_c65 | id), data = dat)
+    
+    diab_m9c_lmer <- lmer(mem ~ first_test + 
+                              (diabetes_bl + female + age0_c65 + edu_c) * ns2(age_y_c65) +
+                             (1 + ns1(age_y_c65) | id), data = dat)
+    
+    #create vectors with starting values for hlme to use to speed up runtime
+    for (j in 1:9){
+         assign(paste0("start_diab",j,"a"), c(fixef(get(paste0("diab_m",j,"a_lmer"))), 
+           as.data.frame(VarCorr(get(paste0("diab_m",j,"a_lmer"))))[c(1,3,2),"vcov"], 
+           as.data.frame(VarCorr(get(paste0("diab_m",j,"a_lmer"))))[4,"sdcor"]))
+      
+        assign(paste0("start_diab",j,"b"), c(fixef(get(paste0("diab_m",j,"b_lmer"))), 
+               as.data.frame(VarCorr(get(paste0("diab_m",j,"b_lmer"))))[c(1,3,2),"vcov"], 
+               as.data.frame(VarCorr(get(paste0("diab_m",j,"b_lmer"))))[4,"sdcor"]))
+        
+        assign(paste0("start_diab",j,"c"), c(fixef(get(paste0("diab_m",j,"c_lmer"))), 
+               as.data.frame(VarCorr(get(paste0("diab_m",j,"c_lmer"))))[c(1,4,2,5,6,3),"vcov"], 
+               as.data.frame(VarCorr(get(paste0("diab_m",j,"c_lmer"))))[7,"sdcor"]))
+    }
+    
+    
+    #Run final APOE models with hlme function
+    #Time only
+    diab_m1a <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab1a), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                    which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+
+    diab_m1b <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab1b), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                    which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+    diab_m1c <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab1c), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                    which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })  
+      
+      # Time adjusted on Age0 (linear) without interaction
+      diab_m2a <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * years +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab2a), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~  first_test + (diabetes_bl + female + edu_c) * years +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m2b <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns1(years) +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab2b), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~  first_test + (diabetes_bl + female + edu_c) * ns1(years) +
+                           age0_c65,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+           
+      diab_m2c <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(years) +
+                       age0_c65,
+                    random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                    maxiter=100, B=start_diab2c), 
+            
+            error=function(cond){
+              message(paste("There was a problem with the lmer starting values
+                            in this model. Here's the error message:"))
+              message(cond)
+              message(paste("\nNow attempting to run without starting values, 
+                            which will take some time."))
+              return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(years) +
+                       age0_c65,
+                    random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                    maxiter=100))
+              })
+  
+      
+      
+      
+      # Time adjusted on Age0 (spline) without interaction
+      diab_m3a <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * years +
+                           ns1(age0_c65),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab3a), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values,
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * years +
+                           ns1(age0_c65),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m3b <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns1(years) +
+                           ns1(age0_c65),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab3b), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values,
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns1(years) +
+                           ns1(age0_c65),
+                        random = ~years, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      diab_m3c <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(years) +
+                           ns1(age0_c65),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab3c), 
+                
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values,
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(years) +
+                           ns1(age0_c65),
+                        random = ~ns1(years), subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      
+      # Time adjusted on Age0 (linear) with interaction
+      diab_m4a <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab4a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m4b <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab4b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+        
+      diab_m4c <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab4c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+       
+      # Time adjusted on Age0 (spline) with interaction
+      diab_m5a <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + ns1(age0_c65) + edu_c) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab5a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + ns1(age0_c65) + edu_c) * years,
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m5b <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + ns1(age0_c65) + edu_c) * ns1(years),
+                        random = ~years, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab5b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + ns1(age0_c65) + edu_c) * ns1(years),
+                        random = ~years, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      diab_m5c <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + ns1(age0_c65) + edu_c) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab5c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + ns1(age0_c65) + edu_c) * ns2(years),
+                        random = ~ns1(years), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+     
+      
+       # Only age
+      diab_m6a <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab6a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m6b <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab6b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+         
+      diab_m6c <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab6c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+
+      
+      # Age adjusted on Age0 (linear) without interaction
+      diab_m7a <- tryCatch(hlme(mem ~ first_test + age0_c65 + (diabetes_bl + female + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab7a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + age0_c65 + (diabetes_bl + female + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m7b <- tryCatch(hlme(mem ~ first_test + age0_c65 + (diabetes_bl + female + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab7b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + age0_c65 + (diabetes_bl + female + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m7c <- tryCatch(hlme(mem ~ first_test + age0_c65 + (diabetes_bl + female + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab7c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + age0_c65 + (diabetes_bl + female + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+
+      
+      # Age adjusted on Age0 (spline) without interaction
+      diab_m8a <- tryCatch(hlme(mem ~ first_test + ns1(age0_c65) + (diabetes_bl + female + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab8a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + ns1(age0_c65) + (diabetes_bl + female + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+        diab_m8b <- tryCatch(hlme(mem ~ first_test + ns1(age0_c65) + (diabetes_bl + female + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab8b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + ns1(age0_c65) + (diabetes_bl + female + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      diab_m8c <- tryCatch(hlme(mem ~ first_test + ns1(age0_c65) + (diabetes_bl + female + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab8c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + ns1(age0_c65) + (diabetes_bl + female + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100))
+                  })
+      
+      # Age adjusted on Age0 (linear) with interaction
+      diab_m9a <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab9a),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * age_y_c65, 
+                        random = ~age_y_c65, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      diab_m9b <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab9b),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns1(age_y_c65), 
+                        random = ~age_y_c65, subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      diab_m9c <- tryCatch(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id", data = dat, verbose = F,  
+                        maxiter=100, B=start_diab9c),
+               
+                error=function(cond){
+                  message(paste("There was a problem with the lmer starting values
+                                in this model. Here's the error message:"))
+                  message(cond)
+                  message(paste("\nNow attempting to run without starting values, 
+                                which will take some time."))
+                  return(hlme(mem ~ first_test + (diabetes_bl + female + age0_c65 + edu_c) * ns2(age_y_c65), 
+                        random = ~ns1(age_y_c65), subject="id",
+                                        data = dat, verbose = F,  maxiter=100))
+                  })
+      
+      
+      
+     diabmodlist<-list(diab_m1a=diab_m1a, diab_m1b=diab_m1b, diab_m1c=diab_m1c, 
+                 diab_m2a=diab_m2a, diab_m2b=diab_m2b, diab_m2c=diab_m2c, 
+                 diab_m3a=diab_m3a, diab_m3b=diab_m3b, diab_m3c=diab_m3c,
+                 diab_m4a=diab_m4a, diab_m4b=diab_m4b, diab_m4c=diab_m4c, 
+                 diab_m5a=diab_m5a, diab_m5b=diab_m5b, diab_m5c=diab_m5c, 
+                 diab_m6a=diab_m6a, diab_m6b=diab_m6b, diab_m6c=diab_m6c,
+                 diab_m7a=diab_m7a, diab_m7b=diab_m7b, diab_m7c=diab_m7c, 
+                 diab_m8a=diab_m8a, diab_m8b=diab_m8b, diab_m8c=diab_m8c, 
+                 diab_m9a=diab_m9a, diab_m9b=diab_m9b, diab_m9c=diab_m9c)
+
+  
+      
+      assign(paste0("diabmods_",i),lapply(diabmodlist, rm_output))
+      
+  }         
+``` 
+
+
+Now combine the list output and export to output folder
+
+```{r, save_output}
+
+  #################################################################         
+  #Section 5 
+  #Aggregate and save all results as an R object  
+  #################################################################
+
+for (i in analysisvector) {
+    
+    assign(paste0("outputlist_",i),list(get(paste0("desc_",i)),get(paste0("apoemods_",i)), get(paste0("diabmods_",i))))
+
+    save(list=paste0("outputlist_",i), file=paste0(path_to_output,"/output_",cohort,"_",i,".Rdata"))
+    
+}
+  end<-Sys.time()
+  end-start
+```
+
+
+
+
