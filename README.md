@@ -8,7 +8,7 @@ o	2. Loading data: In a loop over all cohorts and groups, pull in .Rdata output,
 o	3. Extracting model results: extracts model fits from all output, and compares lowest AIC, BIC, and most flexible models that converge
 o	4. Creates input objects that will be used to create the predicted trajectories for each model. 
 
-1.1 Final models.R: This script uses the fitted model data formatted in the “Load results.R” script (which it sources), and combines it with the final models selected by coauthors in a google sheet to create the final set of models used to create trajectory figures for the paper. 
+  1.1 Final models.R: This script uses the fitted model data formatted in the “Load results.R” script (which it sources), and combines it with the final models selected by coauthors in a spreadsheet to create the final set of models used to create trajectory figures for the paper. 
 
 
 2.	Table 1 formatting.R: Sources the “1 Load results.R” script, and uses output from each cohort and group to create Table 1s for the paper. The major parts of the code are:
